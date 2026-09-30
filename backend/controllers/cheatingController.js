@@ -147,7 +147,7 @@ exports.getCheatingStats = async (req, res) => {
 		const { testId } = req.params;
 
 		const stats = await CheatingLog.aggregate([
-			{ $match: { testId: require('mongoose').Types.ObjectId(testId) } },
+			{ $match: { testId: new (require('mongoose').Types.ObjectId)(testId) } },
 			{
 				$group: {
 					_id: '$userId',

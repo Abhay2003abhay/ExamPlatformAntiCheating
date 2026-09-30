@@ -64,15 +64,28 @@ export const useAuthStore = create((set) => ({
 		}
 	},
 
-	checkAuth: () => {
+		checkAuth: () => {
 		const token = localStorage.getItem('token');
-		if (token) {
+		if (!token) return;
+		try {
+			const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+			const payload = JSON.parse(atob(base64));
+			if (payload.exp * 1000 < Date.now()) {
+				localStorage.removeItem('token');
+				return;
+			}
 			axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-			set({ token, isAuthenticated: true });
+			set({
+				token,
+				user: { email: payload.email, type: payload.type },
+				isAuthenticated: true,
+			});
+		} catch (error) {
+			localStorage.removeItem('token');
 		}
 	},
 }));
-
+useAuthStore.getState().checkAuth();
 export const useExamStore = create((set, get) => ({
 	tests: [],
 	currentTest: null,

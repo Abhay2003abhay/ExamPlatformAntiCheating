@@ -63,31 +63,6 @@ export default function Dashboard() {
 
 			{/* Main Content */}
 			<main className="container mx-auto px-4 py-8">
-				{/* Agent Mode Section */}
-				<div className="bg-white rounded-lg shadow-md p-6 mb-8">
-					<h2 className="text-2xl font-bold text-gray-800 mb-4">Agent Mode</h2>
-					<p className="text-gray-600 mb-4">
-						Want a custom test? Enter a topic below, and our AI will generate a new exam for you.
-					</p>
-					<form onSubmit={handleGenerateTest} className="flex items-center gap-4">
-						<input
-							type="text"
-							value={topic}
-							onChange={(e) => setTopic(e.target.value)}
-							placeholder="e.g., 'React Hooks', 'Quantum Physics'"
-							className="flex-grow px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-							disabled={isGenerating}
-						/>
-						<button
-							type="submit"
-							className="bg-green-600 hover:bg-green-700 text-white font-bold px-6 py-2 rounded-lg transition disabled:bg-gray-400"
-							disabled={isGenerating}
-						>
-							{isGenerating ? 'Generating...' : 'Generate Test'}
-						</button>
-					</form>
-				</div>
-
 				<h2 className="text-3xl font-bold text-gray-800 mb-6">Available Tests</h2>
 
 				{loading ? (

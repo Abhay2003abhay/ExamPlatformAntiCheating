@@ -5,44 +5,60 @@ import { ToastProvider } from './components/Toast';
 import Login from './components/Login';
 import Dashboard from './components/Dashboard';
 import ExamInterface from './components/ExamInterface';
+import AdminDashboard from './components/AdminDashboard';
 
-function PrivateRoute({ children }) {
-	const { isAuthenticated } = useAuthStore();
-	return isAuthenticated ? children : <Navigate to="/" />;
+const TEST_TAKERS = ['candidate', 'intern', 'developer'];
+
+function PrivateRoute({ children, roles }) {
+  const { isAuthenticated, user } = useAuthStore();
+  if (!isAuthenticated) return <Navigate to="/" />;
+  if (roles && !roles.includes(user?.type)) {
+    if (!user) return <Navigate to="/" />;
+    return <Navigate to={user.type === 'admin' ? '/admin' : '/dashboard'} />;
+  }
+  return children;
 }
 
 function App() {
-	const { checkAuth } = useAuthStore();
+  const { checkAuth } = useAuthStore();
 
-	useEffect(() => {
-		checkAuth();
-	}, []);
+  useEffect(() => {
+    checkAuth();
+  }, []);
 
-	return (
-		<ToastProvider>
-			<Router>
-				<Routes>
-					<Route path="/" element={<Login />} />
-					<Route
-						path="/dashboard"
-						element={
-							<PrivateRoute>
-								<Dashboard />
-							</PrivateRoute>
-						}
-					/>
-					<Route
-						path="/exam/:testId"
-						element={
-							<PrivateRoute>
-								<ExamInterface />
-							</PrivateRoute>
-						}
-					/>
-				</Routes>
-			</Router>
-		</ToastProvider>
-	);
+  return (
+    <ToastProvider>
+      <Router>
+        <Routes>
+          <Route path="/" element={<Login />} />
+          <Route
+            path="/dashboard"
+            element={
+              <PrivateRoute roles={TEST_TAKERS}>
+                <Dashboard />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/exam/:testId"
+            element={
+              <PrivateRoute roles={TEST_TAKERS}>
+                <ExamInterface />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <PrivateRoute roles={['admin']}>
+                <AdminDashboard />
+              </PrivateRoute>
+            }
+          />
+        </Routes>
+      </Router>
+    </ToastProvider>
+  );
 }
 
 export default App;

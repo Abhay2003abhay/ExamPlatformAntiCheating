@@ -74,7 +74,6 @@ export default function Login() {
 								className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
 							>
 								<option value="candidate">Candidate</option>
-								<option value="admin">Admin</option>
 							</select>
 						</div>
 					)}

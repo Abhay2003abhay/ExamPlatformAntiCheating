@@ -22,14 +22,20 @@ exports.signup = async (req, res) => {
 		}
 		const existingUser = await User.findOne({ email });
 
-		if (existingUser) {
+				if (existingUser) {
 			return res
 				.status(401)
 				.json({ success: false, message: 'User already exists!' });
 		}
 
-		const hashedPassword = await doHash(password, 12);
+		if (type === 'admin') {
+			return res
+				.status(403)
+				.json({ success: false, message: 'Admin accounts cannot be created through signup' });
+		}
 
+		const hashedPassword = await doHash(password, 12);
+		
 		const newUser = new User({
 			email,
 			password: hashedPassword,
