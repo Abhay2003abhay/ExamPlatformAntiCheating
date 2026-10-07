@@ -51,4 +51,4 @@ MANIFEST
 
 # OS specific
 .DS_Store
-Thumbs.db
+Thumbs.dbdist/
