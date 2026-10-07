@@ -175,194 +175,217 @@ exports.addQuestions = async (req, res) => {
 	}
 };
 
+// ---- Server-side timer helpers ----
+const GRACE_MS = 5000; // allowance for network delay
+
+function getDeadline(progress, test) {
+  return new Date(progress.startedAt).getTime() + test.duration * 60 * 1000;
+}
+
+function getRemainingSeconds(progress, test) {
+  return Math.max(0, Math.floor((getDeadline(progress, test) - Date.now()) / 1000));
+}
+
+function isExpired(progress, test) {
+  return Date.now() > getDeadline(progress, test) + GRACE_MS;
+}
+
+// Grade the saved answers and close the attempt
+async function finalizeAttempt(progress, test, status) {
+  const questions = await Question.find({ testId: progress.testId }).select('+correctAnswer');
+  let totalScore = 0;
+  progress.answers.forEach((answer) => {
+    const question = questions.find((q) => q._id.toString() === answer.questionId.toString());
+    if (question && question.correctAnswer === answer.selectedAnswer) {
+      answer.isCorrect = true;
+      answer.marksObtained = question.marks;
+      totalScore += question.marks;
+    } else {
+      answer.isCorrect = false;
+      answer.marksObtained = 0;
+    }
+  });
+  progress.totalScore = totalScore;
+  progress.isPassed = totalScore >= test.passingMarks;
+  progress.status = status;
+  progress.timeRemaining = 0;
+  progress.submittedAt = status === 'auto-submitted' ? new Date(getDeadline(progress, test)) : new Date();
+  await progress.save();
+  return progress;
+}
+
 // Start a test (creates UserProgress record)
 exports.startTest = async (req, res) => {
-	try {
-		const { testId } = req.body;
-		const userId = req.user.userId;
+  try {
+    const { testId } = req.body;
+    const userId = req.user.userId;
 
-		// Check if test exists and is active
-		const test = await Test.findById(testId);
-		if (!test || !test.isActive) {
-			return res.status(404).json({ success: false, message: 'Test not found or inactive' });
-		}
+    const test = await Test.findById(testId);
+    if (!test || !test.isActive) {
+      return res.status(404).json({ success: false, message: 'Test not found or inactive' });
+    }
 
-		// Check if user has already attempted the test
-		const existingAttempts = await UserProgress.countDocuments({ userId, testId });
-		if (existingAttempts >= test.allowedAttempts) {
-			return res.status(400).json({ success: false, message: 'Maximum attempts reached' });
-		}
+    // Resume an in-progress attempt first, so a page refresh is not a new attempt
+    const inProgress = await UserProgress.findOne({ userId, testId, status: 'in-progress' });
+    if (inProgress) {
+      if (isExpired(inProgress, test)) {
+        await finalizeAttempt(inProgress, test, 'auto-submitted');
+        return res.status(400).json({
+          success: false,
+          message: 'Your time for this test has ended. It was submitted automatically.',
+        });
+      }
+      inProgress.timeRemaining = getRemainingSeconds(inProgress, test);
+      await inProgress.save();
+      return res.status(200).json({
+        success: true,
+        message: 'Resuming existing attempt',
+        progress: inProgress,
+      });
+    }
 
-		// Check for in-progress attempts
-		const inProgressAttempt = await UserProgress.findOne({ userId, testId, status: 'in-progress' });
-		if (inProgressAttempt) {
-			return res.status(200).json({
-				success: true,
-				message: 'Resuming existing attempt',
-				progress: inProgressAttempt,
-			});
-		}
+    const existingAttempts = await UserProgress.countDocuments({ userId, testId });
+    if (existingAttempts >= test.allowedAttempts) {
+      return res.status(400).json({ success: false, message: 'Maximum attempts reached' });
+    }
 
-		// Create new progress record
-		const newProgress = new UserProgress({
-			userId,
-			testId,
-			attemptNumber: existingAttempts + 1,
-			timeRemaining: test.duration * 60, // Convert to seconds
-		});
+    const newProgress = new UserProgress({
+      userId,
+      testId,
+      attemptNumber: existingAttempts + 1,
+      timeRemaining: test.duration * 60,
+    });
+    const savedProgress = await newProgress.save();
 
-		const savedProgress = await newProgress.save();
-
-		res.status(201).json({
-			success: true,
-			message: 'Test started successfully',
-			progress: savedProgress,
-		});
-	} catch (error) {
-		console.error(error);
-		res.status(500).json({ success: false, message: 'Failed to start test', error: error.message });
-	}
+    res.status(201).json({
+      success: true,
+      message: 'Test started successfully',
+      progress: savedProgress,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to start test', error: error.message });
+  }
 };
 
-// Save answer for a question
+// Save answer for a question (rejected after the deadline)
 exports.saveAnswer = async (req, res) => {
-	try {
-		const { progressId, questionId, selectedAnswer } = req.body;
-		const userId = req.user.userId;
+  try {
+    const { progressId, questionId, selectedAnswer } = req.body;
+    const userId = req.user.userId;
 
-		// Find progress record
-		const progress = await UserProgress.findOne({ _id: progressId, userId });
-		if (!progress) {
-			return res.status(404).json({ success: false, message: 'Progress not found' });
-		}
+    const progress = await UserProgress.findOne({ _id: progressId, userId });
+    if (!progress) {
+      return res.status(404).json({ success: false, message: 'Progress not found' });
+    }
+    if (progress.status !== 'in-progress') {
+      return res.status(400).json({ success: false, message: 'Test already submitted' });
+    }
 
-		if (progress.status !== 'in-progress') {
-			return res.status(400).json({ success: false, message: 'Test already submitted' });
-		}
+    const test = await Test.findById(progress.testId);
+    if (isExpired(progress, test)) {
+      return res.status(403).json({ success: false, message: 'Time is up. Answers can no longer be saved.' });
+    }
 
-		// Update or add answer
-		const answerIndex = progress.answers.findIndex(
-			(a) => a.questionId.toString() === questionId
-		);
+    const answerIndex = progress.answers.findIndex((a) => a.questionId.toString() === questionId);
+    if (answerIndex > -1) {
+      progress.answers[answerIndex].selectedAnswer = selectedAnswer;
+    } else {
+      progress.answers.push({ questionId, selectedAnswer });
+    }
+    await progress.save();
 
-		if (answerIndex > -1) {
-			progress.answers[answerIndex].selectedAnswer = selectedAnswer;
-		} else {
-			progress.answers.push({
-				questionId,
-				selectedAnswer,
-			});
-		}
-
-		await progress.save();
-
-		res.status(200).json({
-			success: true,
-			message: 'Answer saved successfully',
-			progress,
-		});
-	} catch (error) {
-		console.error(error);
-		res.status(500).json({ success: false, message: 'Failed to save answer', error: error.message });
-	}
+    res.status(200).json({
+      success: true,
+      message: 'Answer saved successfully',
+      progress,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to save answer', error: error.message });
+  }
 };
 
-// Submit test
+// Submit test (marked auto-submitted if the deadline already passed)
 exports.submitTest = async (req, res) => {
-	try {
-		const { progressId } = req.body;
-		const userId = req.user.userId;
+  try {
+    const { progressId } = req.body;
+    const userId = req.user.userId;
 
-		// Find progress record
-		const progress = await UserProgress.findOne({ _id: progressId, userId });
-		if (!progress) {
-			return res.status(404).json({ success: false, message: 'Progress not found' });
-		}
+    const progress = await UserProgress.findOne({ _id: progressId, userId });
+    if (!progress) {
+      return res.status(404).json({ success: false, message: 'Progress not found' });
+    }
+    if (progress.status !== 'in-progress') {
+      return res.status(400).json({ success: false, message: 'Test already submitted' });
+    }
 
-		if (progress.status !== 'in-progress') {
-			return res.status(400).json({ success: false, message: 'Test already submitted' });
-		}
+    const test = await Test.findById(progress.testId);
+    const status = isExpired(progress, test) ? 'auto-submitted' : 'submitted';
+    await finalizeAttempt(progress, test, status);
 
-		// Get all questions with correct answers
-		const questions = await Question.find({ testId: progress.testId }).select('+correctAnswer');
-		const test = await Test.findById(progress.testId);
-
-		// Calculate score
-		let totalScore = 0;
-		progress.answers.forEach((answer) => {
-			const question = questions.find((q) => q._id.toString() === answer.questionId.toString());
-			if (question && question.correctAnswer === answer.selectedAnswer) {
-				answer.isCorrect = true;
-				answer.marksObtained = question.marks;
-				totalScore += question.marks;
-			} else {
-				answer.isCorrect = false;
-				answer.marksObtained = 0;
-			}
-		});
-
-		progress.totalScore = totalScore;
-		progress.isPassed = totalScore >= test.passingMarks;
-		progress.status = 'submitted';
-		progress.submittedAt = new Date();
-
-		await progress.save();
-
-		res.status(200).json({
-			success: true,
-			message: 'Test submitted successfully',
-			progress,
-		});
-	} catch (error) {
-		console.error(error);
-		res.status(500).json({ success: false, message: 'Failed to submit test', error: error.message });
-	}
+    res.status(200).json({
+      success: true,
+      message: status === 'auto-submitted' ? 'Time was up. Test submitted automatically.' : 'Test submitted successfully',
+      progress,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to submit test', error: error.message });
+  }
 };
 
 // Get user's progress for a test
 exports.getUserProgress = async (req, res) => {
-	try {
-		const { progressId } = req.params;
-		const userId = req.user.userId;
+  try {
+    const { progressId } = req.params;
+    const userId = req.user.userId;
 
-		const progress = await UserProgress.findOne({ _id: progressId, userId })
-			.populate('testId', 'title duration totalMarks passingMarks')
-			.populate('answers.questionId', 'questionText options');
+    const progress = await UserProgress.findOne({ _id: progressId, userId })
+      .populate('testId', 'title duration totalMarks passingMarks')
+      .populate('answers.questionId', 'questionText options');
 
-		if (!progress) {
-			return res.status(404).json({ success: false, message: 'Progress not found' });
-		}
+    if (!progress) {
+      return res.status(404).json({ success: false, message: 'Progress not found' });
+    }
 
-		res.status(200).json({
-			success: true,
-			progress,
-		});
-	} catch (error) {
-		console.error(error);
-		res.status(500).json({ success: false, message: 'Failed to fetch progress', error: error.message });
-	}
+    res.status(200).json({
+      success: true,
+      progress,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to fetch progress', error: error.message });
+  }
 };
 
-// Update time remaining (auto-save)
+// Update time remaining: the server calculates it, the client value is ignored
 exports.updateTimeRemaining = async (req, res) => {
-	try {
-		const { progressId, timeRemaining } = req.body;
-		const userId = req.user.userId;
+  try {
+    const { progressId } = req.body;
+    const userId = req.user.userId;
 
-		const progress = await UserProgress.findOne({ _id: progressId, userId });
-		if (!progress) {
-			return res.status(404).json({ success: false, message: 'Progress not found' });
-		}
+    const progress = await UserProgress.findOne({ _id: progressId, userId });
+    if (!progress) {
+      return res.status(404).json({ success: false, message: 'Progress not found' });
+    }
+    if (progress.status !== 'in-progress') {
+      return res.status(400).json({ success: false, message: 'Test already submitted' });
+    }
 
-		progress.timeRemaining = timeRemaining;
-		await progress.save();
+    const test = await Test.findById(progress.testId);
+    const remaining = getRemainingSeconds(progress, test);
+    progress.timeRemaining = remaining;
+    await progress.save();
 
-		res.status(200).json({
-			success: true,
-			message: 'Time updated',
-		});
-	} catch (error) {
-		console.error(error);
-		res.status(500).json({ success: false, message: 'Failed to update time', error: error.message });
-	}
+    res.status(200).json({
+      success: true,
+      message: 'Time updated',
+      timeRemaining: remaining,
+      expired: remaining === 0,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: 'Failed to update time', error: error.message });
+  }
 };
